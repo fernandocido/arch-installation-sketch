@@ -1,0 +1,208 @@
+#change keyboard layout to Portuguese-BR
+loadkeys br-abnt2
+
+#check internet connection
+#"ip a" or ping a web address (or 8.8.8.8)
+#if not connected:
+iwctl
+device list
+station "device-name" scan
+station "device-name" get-networks
+station "device-name" connect "wireless-network-name"
+
+#setting up disk (with encryption)
+fdisk -l
+fdisk "disk-id"
+
+g (GPT partition layout)
+n (new partiton)
+default (1)
+default
++512M
+t (type)
+1 (EFI)
+
+n (new)
+default (2)
+default
++512M
+
+n (new)
+default (3)
+default (remaining disk)
+t (type)
+3 (partition)
+30 (LVM - Logical Volume Management)
+
+#check if everything is ok with the partitions
+p (check partitions)
+
+#write
+w
+
+#check again with 
+fdisk -l
+
+#format
+mkfs.fat -F32 "EFI device id"
+mkfs.ext4 "second partition device id"
+
+#encrypt 3th partition
+#!!!check keys before password!!!
+cryptsetup luksFormat "device id"
+--> type YES
+--> type Passphrase
+
+#unlock encrypted partition
+cryptsetup open --type luks "device id" lvm
+--> type passphrase
+
+#setup LVM
+#(pv -> partition volume?) 
+#(vg -> volume group?)
+#(lv -> logical volume)
+pvcreate --dataalignment  1m /dev/mapper/lvm
+vgcreate volgroup0 /dev/mapper/lvm
+lvcreate -L 50GB volgroup0 -n lv_root
+lvcreate -l 100%FREE volgroup0 -n lv_home
+
+#start LVM
+modprobe dm_mod
+vgscan
+vgchange -ay
+
+#setup volumes
+mkfs.ext4 /dev/volgroup0/lv_root
+mount /dev/volgroup0/lv_root /mnt
+mkdir /mnt/boot
+mount /dev/sda2 /mnt/boot
+mkfs.ext4 /dev/volgroup0/lv_home
+mkdir /mnt/home
+mount /dev/volgroup0/lv_home /mnt/home
+mkdir /mnt/etc
+
+#generate fstab
+genfstab -U -p /mnt >> /mnt/etc/fstab
+
+#check the created fstab (/ /boot /home)
+cat /mnt/etc/fstab
+
+#start the installation
+pacstrap -i /mnt base
+
+#base packages
+arch-chroot /mnt
+pacman -S linux linux-headers linux-lts linux-lts-headers nano base-devel openssh networkmanager wpa_supplicant wireless_tools netctl dialog lvm2
+
+#enable SSH at start
+systemctl enable sshd
+
+#enable network
+systemctl enable NetworkManager
+
+#setup boot
+nano /etc/mkinitcpio.conf
+--> search not commented "HOOKS=" and add "encrypt" and "lvm2" between "block" and "filesystems"
+mkinitcpio -p linux
+mkinitcpio -p linux-lts
+
+#setup locale
+nano /etc/locale.gen
+--> uncomment desired languages
+locale-gen
+
+#set password for root
+passwd
+--> type password
+--> retype
+
+#create standard user
+useradd -m -g users -G wheel cido
+passwd cido
+--> type password
+--> retype
+
+#check if sudo is intalled
+which sudo
+#if not
+pacman -S sudo
+
+#sudoers
+EDITOR=nano visudo
+uncomment "%wheel ALL=(ALL) ALL"
+
+#GRUB
+pacman -S grub efibootmgr dosfstools os-prober mtools
+mkdir /boot/EFI
+mount "EFI device id" /boot/EFI
+grub-install --target=x86_64-efi --bootloader-id=grub_uefi --recheck
+
+#check locale directory
+ls -l /boot/grub
+#if not
+mkdir /boot/grub/locale
+
+#set english for GRUB messages
+cp /usr/share/locale/en\@quot/LC_MESSAGES/grub.mo /boot/grub/locale/en.mo
+
+#set GRUB to unlock encryption at boot
+nano /etc/default/grub
+--> uncomment the "GRUB_ENABLE_CRYPTODISK=y" line
+--> add "cryptdevice=/'device id':volgroup0:allow-discards" to the "GRUB_CMDLINE_LINUX_DEFAULT" line
+
+#generate the GRUB conf file
+grub-mkconfig -o /boot/grub/grub.cfg
+
+#br-abnt2
+nano /etc/vconsole.conf
+KEYMAP=br-abnt2
+
+#exit and reboot
+exit
+umount -a
+reboot
+
+#post-installation
+
+#create SWAP File
+su
+cd /root
+dd if=/dev/zero of=/swapfile bs=1M count=4096 status=progress
+chmod 600 /swapfile
+mkswap /swapfile
+
+#fstab backup
+cp /etc/fstab /etc/fstab.bak
+echo '/swapfile none swap sw 0 0' | tee -a /etc/fstab
+cat /etc/fstab
+mount -a
+swapon -a
+
+#set timezone
+timedatectl set-timezone America/Sao_Paulo
+systemctl enable systemd-timesyncd
+
+#set host
+hostnamectl set-hostname rigel
+nano /etc/hosts
+--> add line "127.0.0.1" localhost
+--> add line "127.0.1.1" rigel
+
+#cpu microcode
+--> AMD --> pacman -S amd-ucode
+--> Intel --> pacman -S intel-ucode
+
+#xorg (see more about Wayland)
+pacman -S xorg-server
+--> Intel or AMD --> pacman -S mesa
+--> NVIDIA --> pacman -S nvidia nvidia-lts
+--> Virtual Box --> pacman -S virtualbox-guest-utils xf86-video-vmware
+--> Virtual Box --> systemctl enable vboxservice
+
+#PLASMA
+pacman -S plasma-meta kde-applications
+systemctl enable sddm
+
+#some packages
+pacman -S firefox fortuune cowsay neofech tree cmatrix htop git
+reboot
